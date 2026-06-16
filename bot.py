@@ -1475,11 +1475,12 @@ async def admin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not promos:
             await query.message.reply_text("😔 Promo-kodlar yo'q.")
             return
-        lines = [
-            f"{'✅' if p[6] else '❌'} *{p[1]}* — {p[3]}{'%' if p[2]=='percent' else ' so'm'} "
-            f"({p[5]}/{p[4]} ta ishlatilgan)"
-            for p in promos
-        ]
+        lines = []
+        for p in promos:
+            status   = '✅' if p[6] else '❌'
+            discount = f"{p[3]}%" if p[2] == 'percent' else f"{p[3]} som"
+            lines.append(f"{status} *{p[1]}* — {discount} ({p[5]}/{p[4]} ta ishlatilgan)")
+
         await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     elif action == "adm_reviews":
