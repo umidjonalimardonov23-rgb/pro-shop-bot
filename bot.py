@@ -37,10 +37,8 @@ ADMIN_ID   = int(os.environ.get("ADMIN_ID", "8787603995"))
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "@Shop_market_uzz")
 
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "9860 6067 6080 6673")
-CARD_OWNER  = os.environ.get("CARD_OWNER",  "+998953909477")
-
-CLICK_URL  = os.environ.get("CLICK_URL",  "https://my.click.uz/services/pay?service_id=XXXXX&merchant_id=XXXXX")
-PAYME_URL  = os.environ.get("PAYME_URL",  "https://checkout.paycom.uz/XXXXX")
+CARD_OWNER  = os.environ.get("CARD_OWNER",  "Alimardonov Umidjon")
+CARD_PHONE  = os.environ.get("CARD_PHONE",  "+998953909477")
 
 REFERRAL_BONUS      = 5_000   # so'm
 LOW_STOCK_THRESHOLD = 5
@@ -88,8 +86,9 @@ TEXTS = {
         "pay_payme":     "💚 Payme orqali to'lash",
         "card_info":     (
             "💳 *Karta raqami:*\n`{card}`\n"
-            "👤 Egasi: {owner}\n"
-            "💰 Summa: *{total} so'm*\n\n"
+            "👤 *Egasi:* {owner}\n"
+            "📞 *Ulangan raqam:* {phone}\n"
+            "💰 *Summa:* {total} so'm\n\n"
             "✅ To'lovni amalga oshirib, chekni yuboring."
         ),
         "send_receipt":  "🧾 Chekni yuboring (surat yoki screenshot):",
@@ -150,8 +149,9 @@ TEXTS = {
         "pay_payme":     "💚 Оплата Payme",
         "card_info":     (
             "💳 *Номер карты:*\n`{card}`\n"
-            "👤 Владелец: {owner}\n"
-            "💰 Сумма: *{total} сум*\n\n"
+            "👤 *Владелец:* {owner}\n"
+            "📞 *Номер телефона:* {phone}\n"
+            "💰 *Сумма:* {total} сум\n\n"
             "✅ Переведите и отправьте чек."
         ),
         "send_receipt":  "🧾 Отправьте чек (фото или скриншот):",
@@ -212,8 +212,9 @@ TEXTS = {
         "pay_payme":     "💚 Pay via Payme",
         "card_info":     (
             "💳 *Card number:*\n`{card}`\n"
-            "👤 Owner: {owner}\n"
-            "💰 Amount: *{total} UZS*\n\n"
+            "👤 *Owner:* {owner}\n"
+            "📞 *Phone:* {phone}\n"
+            "💰 *Amount:* {total} UZS\n\n"
             "✅ Transfer and send the receipt."
         ),
         "send_receipt":  "🧾 Send receipt (photo or screenshot):",
@@ -1010,8 +1011,8 @@ async def o_zone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     rows = [
         [InlineKeyboardButton(t(lang, "pay_card"),  callback_data="pay_card")],
-        [InlineKeyboardButton(t(lang, "pay_click"), url=f"{CLICK_URL}&amount={total}")],
-        [InlineKeyboardButton(t(lang, "pay_payme"), url=PAYME_URL)],
+        [InlineKeyboardButton(t(lang, "pay_click"), callback_data="pay_click")],
+        [InlineKeyboardButton(t(lang, "pay_payme"), callback_data="pay_payme")],
     ]
     if balance > 0:
         use_amt = min(balance, total)
@@ -1045,7 +1046,7 @@ async def o_use_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     remaining = max(0, ctx.user_data["o_total_calc"] - amount)
     await query.message.reply_text(
         t(lang, "balance_used", amount=f"{amount:,}") + "\n\n" +
-        t(lang, "card_info", card=CARD_NUMBER, owner=CARD_OWNER, total=f"{remaining:,}"),
+        t(lang, "card_info", card=CARD_NUMBER, owner=CARD_OWNER, phone=CARD_PHONE, total=f"{remaining:,}"),
         parse_mode="Markdown"
     )
     await query.message.reply_text(t(lang, "send_receipt"))
@@ -1058,7 +1059,7 @@ async def o_pay_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang  = ctx.user_data["o_lang"]
     total = ctx.user_data.get("o_total_calc", ctx.user_data["o_qty"] * ctx.user_data["o_price"])
     await query.message.reply_text(
-        t(lang, "card_info", card=CARD_NUMBER, owner=CARD_OWNER, total=f"{total:,}"),
+        t(lang, "card_info", card=CARD_NUMBER, owner=CARD_OWNER, phone=CARD_PHONE, total=f"{total:,}"),
         parse_mode="Markdown"
     )
     await query.message.reply_text(t(lang, "send_receipt"))
@@ -1066,10 +1067,20 @@ async def o_pay_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def o_pay_online(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer("To'lov sahifasiga o'ting")
-    ctx.user_data["o_payment"] = "online"
-    ctx.user_data["o_receipt"] = None
-    return await save_order(update, ctx)
+    await query.answer()
+    method = query.data  # pay_click yoki pay_payme
+    ctx.user_data["o_payment"] = method.replace("pay_", "")
+    lang  = ctx.user_data["o_lang"]
+    total = ctx.user_data.get("o_total_calc", ctx.user_data["o_qty"] * ctx.user_data["o_price"])
+    pay_name = "Click" if method == "pay_click" else "Payme"
+    await query.message.reply_text(
+        f"⚡ *{pay_name} orqali to'lash*\n\n"
+        f"Quyidagi kartaga o'tkazma qiling:\n\n"
+        + t(lang, "card_info", card=CARD_NUMBER, owner=CARD_OWNER, phone=CARD_PHONE, total=f"{total:,}"),
+        parse_mode="Markdown"
+    )
+    await query.message.reply_text(t(lang, "send_receipt"))
+    return O_RECEIPT
 
 async def o_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not update.message.photo:
