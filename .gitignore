@@ -1,0 +1,7 @@
+shop.db
+*.db
+*.db-journal
+__pycache__/
+*.pyc
+*.pyo
+.env
