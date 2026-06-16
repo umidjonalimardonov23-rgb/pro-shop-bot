@@ -19,6 +19,8 @@
 import logging
 import sqlite3
 import os
+import csv
+import io
 from datetime import datetime, timedelta
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -490,6 +492,13 @@ def update_receipt(oid, file_id):
     with db() as c:
         c.execute("UPDATE orders SET receipt_file_id=? WHERE id=?", (file_id, oid))
 
+def update_product_field(pid, field, value):
+    allowed = {"name_uz", "price", "desc_uz", "stock"}
+    if field not in allowed:
+        return
+    with db() as c:
+        c.execute(f"UPDATE products SET {field}=? WHERE id=?", (value, pid))
+
 def get_stats():
     with db() as c:
         tot_o  = c.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
@@ -615,6 +624,12 @@ ADM_BROADCAST = 60
 ADM_ZONE_NAME_UZ, ADM_ZONE_NAME_RU, ADM_ZONE_NAME_EN, ADM_ZONE_PRICE = range(62, 66)
 ADM_STOCK_QTY = 67
 ADM_NOTE      = 70
+
+# Mahsulot tahrirlash (admin)
+EP_SELECT, EP_FIELD, EP_VALUE = range(75, 78)
+
+# Savat (korzinka) checkout
+CART_NAME, CART_PHONE, CART_ADDR, CART_PAY, CART_RECEIPT = range(80, 85)
 
 # ═══════════════════════════════════════════════════════════
 #  🌐  TIL TANLASH
@@ -825,10 +840,16 @@ async def show_product(update, ctx, pid, lang, via_query=False):
         f"{rev_str}"
     )
 
+    cart = ctx.user_data.get("cart", {})
+    cart_count = sum(v["qty"] for v in cart.values())
+    cart_label = f"🛒 Savat ({cart_count} ta)" if cart_count > 0 else "🛒 Savat"
+
     if stock > 0:
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"🛒 {t(lang, 'buy')}", callback_data=f"order_{pid}")
-        ]])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"⚡ Hoziroq buyurtma", callback_data=f"order_{pid}"),
+             InlineKeyboardButton("➕ Savatga qo'sh",     callback_data=f"cart_add_{pid}")],
+            [InlineKeyboardButton(cart_label,              callback_data="cart_view")],
+        ])
     else:
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("❌ Tugagan", callback_data="noop")
@@ -1327,13 +1348,15 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def admin_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Mahsulot qo'shish",  callback_data="adm_addprod"),
-         InlineKeyboardButton("🗑 Mahsulot o'chirish", callback_data="adm_delprod")],
-        [InlineKeyboardButton("🔢 Zahira yangilash",   callback_data="adm_stock"),
-         InlineKeyboardButton("⚠️ Kam qolganlar",      callback_data="adm_lowstock")],
-        [InlineKeyboardButton("🏆 Top sotilganlar",    callback_data="adm_topsales"),
-         InlineKeyboardButton("📊 Statistika",         callback_data="adm_stats")],
-        [InlineKeyboardButton("📋 Buyurtmalar",        callback_data="adm_orders"),
-         InlineKeyboardButton("📢 Broadcast",          callback_data="adm_broadcast")],
+         InlineKeyboardButton("✏️ Mahsulot tahrirlash", callback_data="adm_editprod")],
+        [InlineKeyboardButton("🗑 Mahsulot o'chirish", callback_data="adm_delprod"),
+         InlineKeyboardButton("🔢 Zahira yangilash",   callback_data="adm_stock")],
+        [InlineKeyboardButton("⚠️ Kam qolganlar",      callback_data="adm_lowstock"),
+         InlineKeyboardButton("🏆 Top sotilganlar",    callback_data="adm_topsales")],
+        [InlineKeyboardButton("📊 Statistika",         callback_data="adm_stats"),
+         InlineKeyboardButton("📋 Buyurtmalar",        callback_data="adm_orders")],
+        [InlineKeyboardButton("📢 Broadcast",          callback_data="adm_broadcast"),
+         InlineKeyboardButton("📥 CSV Export",         callback_data="adm_export")],
         [InlineKeyboardButton("🎁 Promo qo'shish",     callback_data="adm_addpromo"),
          InlineKeyboardButton("🎫 Promo ro'yxat",      callback_data="adm_promos")],
         [InlineKeyboardButton("📦 Hudud qo'shish",     callback_data="adm_addzone"),
@@ -1506,6 +1529,44 @@ async def admin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         lines = [f"{'⭐'*r[0]} *{r[2]}* — {r[1] or '(izohsiz)'}" for r in reviews]
         await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    elif action == "adm_export":
+        orders = get_orders()
+        if not orders:
+            await query.message.reply_text("😔 Hali buyurtma yo'q.")
+            return
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["ID","Foydalanuvchi","Mahsulot","Miqdor","Narx","Jami","Ism","Telefon","Manzil","To'lov","Status","Sana"])
+        for o in orders:
+            writer.writerow([
+                o[0], f"@{o[2]}" if o[2] else str(o[1]),
+                o[5], o[6], f"{o[7]:,}", f"{o[8]:,}",
+                o[9], o[10], o[11], o[12], o[13],
+                o[19][:16].replace("T"," ") if o[19] else ""
+            ])
+        content = output.getvalue().encode("utf-8-sig")
+        bio = io.BytesIO(content)
+        bio.name = f"buyurtmalar_{datetime.now().strftime('%d%m%Y_%H%M')}.csv"
+        await query.message.reply_document(
+            bio,
+            caption=f"📊 *Buyurtmalar ro'yxati*\nJami: {len(orders)} ta",
+            parse_mode="Markdown"
+        )
+
+    elif action == "adm_editprod":
+        products = get_products()
+        if not products:
+            await query.message.reply_text("😔 Mahsulotlar yo'q.")
+            return
+        buttons = [[InlineKeyboardButton(
+            f"✏️ {p[3]} — #{p[0]}", callback_data=f"editp_{p[0]}"
+        )] for p in products]
+        await query.message.reply_text(
+            "✏️ *Qaysi mahsulotni tahrirlash?*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
 
     elif action == "adm_addprod":
         # Mahsulot qo'shish: kategoriya tanlash (ConversationHandler entry point)
@@ -1838,6 +1899,296 @@ async def delete_product_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text(f"🗑 *{name}* o'chirildi!", parse_mode="Markdown")
 
 # ═══════════════════════════════════════════════════════════
+#  ✏️  ADMIN: MAHSULOT TAHRIRLASH
+# ═══════════════════════════════════════════════════════════
+async def ep_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Mahsulot tanlandi → qaysi maydonni o'zgartirish so'raladi."""
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id != ADMIN_ID:
+        return ConversationHandler.END
+    pid = int(query.data.split("_")[1])
+    ctx.user_data["ep_pid"] = pid
+    with db() as c:
+        p = c.execute("SELECT name_uz, price, desc_uz, stock FROM products WHERE id=?", (pid,)).fetchone()
+    if not p:
+        await query.message.reply_text("❌ Mahsulot topilmadi.")
+        return ConversationHandler.END
+    ctx.user_data["ep_product"] = p
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"📝 Nomi: {p[0][:20]}",       callback_data="epfield_name_uz")],
+        [InlineKeyboardButton(f"💰 Narxi: {p[1]:,} so'm",     callback_data="epfield_price")],
+        [InlineKeyboardButton(f"📋 Tavsif: {p[2][:20]}...",   callback_data="epfield_desc_uz")],
+        [InlineKeyboardButton(f"📦 Zahira: {p[3]} dona",      callback_data="epfield_stock")],
+        [InlineKeyboardButton("❌ Bekor",                      callback_data="noop")],
+    ])
+    await query.message.reply_text(
+        f"✏️ *#{pid} mahsulotni tahrirlash*\nQaysi maydonni o'zgartirmoqchisiz?",
+        parse_mode="Markdown", reply_markup=kb
+    )
+    return EP_FIELD
+
+async def ep_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Maydon tanlandi → yangi qiymat so'raladi."""
+    query = update.callback_query
+    await query.answer()
+    field = query.data.replace("epfield_", "")
+    ctx.user_data["ep_field"] = field
+    labels = {"name_uz": "Yangi nomi", "price": "Yangi narxi (raqam)", "desc_uz": "Yangi tavsifi", "stock": "Yangi zahira (raqam)"}
+    await query.message.reply_text(
+        f"✏️ {labels.get(field, field)} ni kiriting:",
+        reply_markup=ReplyKeyboardMarkup([["/bekor"]], resize_keyboard=True)
+    )
+    return EP_VALUE
+
+async def ep_value(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Yangi qiymat kiritildi → DB yangilanadi."""
+    txt   = update.message.text.strip()
+    pid   = ctx.user_data.get("ep_pid")
+    field = ctx.user_data.get("ep_field")
+    if field in ("price", "stock"):
+        if not txt.isdigit():
+            await update.message.reply_text("❌ Faqat raqam kiriting:")
+            return EP_VALUE
+        value = int(txt)
+    else:
+        value = txt
+    update_product_field(pid, field, value)
+    labels = {"name_uz": "Nomi", "price": "Narxi", "desc_uz": "Tavsifi", "stock": "Zahira"}
+    await update.message.reply_text(
+        f"✅ *#{pid} mahsulot yangilandi!*\n{labels.get(field,'Maydon')}: *{value}*",
+        parse_mode="Markdown", reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+
+# ═══════════════════════════════════════════════════════════
+#  🛒  SAVAT (KORZINKA)
+# ═══════════════════════════════════════════════════════════
+async def cart_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Mahsulotni savatga qo'shish."""
+    query = update.callback_query
+    await query.answer()
+    pid  = int(query.data.split("_")[2])
+    cart = ctx.user_data.setdefault("cart", {})
+    with db() as c:
+        p = c.execute("SELECT id, name_uz, price, stock FROM products WHERE id=? AND active=1", (pid,)).fetchone()
+    if not p:
+        await query.answer("❌ Mahsulot topilmadi!", show_alert=True)
+        return
+    stock = p[3]
+    cur_qty = cart.get(pid, {}).get("qty", 0)
+    if cur_qty >= stock:
+        await query.answer(f"⚠️ Faqat {stock} dona mavjud!", show_alert=True)
+        return
+    if pid in cart:
+        cart[pid]["qty"] += 1
+    else:
+        cart[pid] = {"name": p[1], "price": p[2], "qty": 1}
+    total_items = sum(v["qty"] for v in cart.values())
+    await query.answer(f"✅ Savatga qo'shildi! ({total_items} ta)", show_alert=False)
+    await query.message.reply_text(
+        f"✅ *{p[1]}* savatga qo'shildi!\n"
+        f"🛒 Savatingizda: {total_items} ta mahsulot",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"🛒 Savatni ko'rish ({total_items} ta)", callback_data="cart_view")
+        ]])
+    )
+
+async def cart_view(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Savatni ko'rsatish."""
+    query = update.callback_query
+    await query.answer()
+    cart = ctx.user_data.get("cart", {})
+    if not cart:
+        await query.message.reply_text(
+            "🛒 *Savat bo'sh*\n\nKatalogdan mahsulot qo'shing!",
+            parse_mode="Markdown"
+        )
+        return
+    lines  = []
+    total  = 0
+    for pid, item in cart.items():
+        subtotal = item["price"] * item["qty"]
+        total   += subtotal
+        lines.append(f"• *{item['name']}* × {item['qty']} = {subtotal:,} so'm")
+    text = (
+        "╔══════════════════════╗\n"
+        "║     🛒  SAVATINGIZ     ║\n"
+        "╚══════════════════════╝\n\n"
+        + "\n".join(lines) +
+        f"\n\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 *Jami: {total:,} so'm*"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Buyurtma berish",  callback_data="cart_checkout")],
+        [InlineKeyboardButton("🗑 Savatni tozalash", callback_data="cart_clear")],
+        [InlineKeyboardButton("🛍 Katalogga qaytish", callback_data="menu_catalog")],
+    ])
+    await query.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def cart_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    ctx.user_data["cart"] = {}
+    await query.message.reply_text("🗑 *Savat tozalandi.*", parse_mode="Markdown")
+
+async def cart_view_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Savat — /savat buyrug'i orqali ko'rish."""
+    cart = ctx.user_data.get("cart", {})
+    if not cart:
+        await update.message.reply_text(
+            "🛒 *Savat hozircha bo'sh*\n\nKatalogga o'ting va mahsulotlarni ➕ Savatga qo'shing!",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛍 Katalog", callback_data="menu_catalog")]])
+        )
+        return
+    lines = []
+    total = 0
+    for pid, item in cart.items():
+        subtotal = item["price"] * item["qty"]
+        total   += subtotal
+        lines.append(f"• *{item['name']}* × {item['qty']} = {subtotal:,} so'm")
+    text = (
+        "╔══════════════════════╗\n"
+        "║     🛒  SAVATINGIZ     ║\n"
+        "╚══════════════════════╝\n\n"
+        + "\n".join(lines) +
+        f"\n\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 *Jami: {total:,} so'm*"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Buyurtma berish",   callback_data="cart_checkout")],
+        [InlineKeyboardButton("🗑 Savatni tozalash",  callback_data="cart_clear")],
+        [InlineKeyboardButton("🛍 Katalogga qaytish", callback_data="menu_catalog")],
+    ])
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def cart_checkout_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Savatdan buyurtma berish — ism so'rash."""
+    query = update.callback_query
+    await query.answer()
+    cart = ctx.user_data.get("cart", {})
+    if not cart:
+        await query.message.reply_text("🛒 Savat bo'sh!")
+        return ConversationHandler.END
+    lang = get_lang(query.from_user.id)
+    ctx.user_data["co_lang"] = lang
+    await query.message.reply_text(
+        "📝 *Buyurtma uchun ma'lumotlar*\n\nIsm-familiyangizni kiriting:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([["/bekor"]], resize_keyboard=True)
+    )
+    return CART_NAME
+
+async def cart_co_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["co_name"] = update.message.text.strip()
+    kb = ReplyKeyboardMarkup(
+        [[KeyboardButton("📱 Raqamni yuborish", request_contact=True)], ["/bekor"]],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+    await update.message.reply_text("📱 Telefon raqamingizni yuboring:", reply_markup=kb)
+    return CART_PHONE
+
+async def cart_co_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.message.contact:
+        ctx.user_data["co_phone"] = update.message.contact.phone_number
+    else:
+        ctx.user_data["co_phone"] = update.message.text.strip()
+    await update.message.reply_text(
+        "🏠 Yetkazib berish manzilingizni kiriting:",
+        reply_markup=ReplyKeyboardMarkup([["/bekor"]], resize_keyboard=True)
+    )
+    return CART_ADDR
+
+async def cart_co_addr(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["co_addr"] = update.message.text.strip()
+    lang  = ctx.user_data.get("co_lang", "uz")
+    cart  = ctx.user_data.get("cart", {})
+    total = sum(v["price"] * v["qty"] for v in cart.values())
+    ctx.user_data["co_total"] = total
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Karta orqali",    callback_data="cpay_card")],
+        [InlineKeyboardButton("⚡ Click",            callback_data="cpay_click")],
+        [InlineKeyboardButton("💚 Payme",            callback_data="cpay_payme")],
+    ])
+    await update.message.reply_text(
+        f"💳 To'lov usulini tanlang:\n\n💰 Jami: *{total:,} so'm*",
+        parse_mode="Markdown", reply_markup=kb
+    )
+    return CART_PAY
+
+async def cart_co_pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query  = update.callback_query
+    await query.answer()
+    method = query.data.replace("cpay_", "")
+    ctx.user_data["co_payment"] = method
+    lang  = ctx.user_data.get("co_lang", "uz")
+    total = ctx.user_data.get("co_total", 0)
+    await query.message.reply_text(
+        t(lang, "card_info", card=CARD_NUMBER, owner=CARD_OWNER, phone=CARD_PHONE, total=f"{total:,}"),
+        parse_mode="Markdown"
+    )
+    await query.message.reply_text("🧾 To'lov chekini yuboring (surat yoki screenshot):")
+    return CART_RECEIPT
+
+async def cart_co_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not update.message.photo:
+        await update.message.reply_text("❌ Surat yuboring:")
+        return CART_RECEIPT
+    receipt_id = update.message.photo[-1].file_id
+    usr        = update.effective_user
+    cart       = ctx.user_data.get("cart", {})
+    d          = ctx.user_data
+
+    order_ids = []
+    for pid, item in cart.items():
+        oid = add_order(
+            usr.id, usr.username or "", d.get("co_lang","uz"),
+            pid, item["name"],
+            item["qty"], item["price"],
+            d["co_name"], d["co_phone"], d["co_addr"],
+            d.get("co_payment", "card"),
+        )
+        update_receipt(oid, receipt_id)
+        decrease_stock(pid, item["qty"])
+        increment_sold(pid, item["qty"])
+        order_ids.append(oid)
+
+    ids_str = ", ".join(f"#{i}" for i in order_ids)
+    total   = d.get("co_total", 0)
+    await update.message.reply_text(
+        f"🎉 *Buyurtmalaringiz qabul qilindi!*\n\n"
+        f"🆔 Buyurtma raqamlari: *{ids_str}*\n"
+        f"💰 Jami: *{total:,} so'm*\n\n"
+        f"Admin tez orada bog'lanadi! ✅",
+        parse_mode="Markdown", reply_markup=ReplyKeyboardRemove()
+    )
+    # Adminga xabar
+    items_txt = "\n".join(f"  • {v['name']} × {v['qty']} = {v['price']*v['qty']:,} so'm" for v in cart.values())
+    admin_text = (
+        f"🛒 *SAVAT BUYURTMASI! ({len(cart)} ta mahsulot)*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{items_txt}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 *Jami: {total:,} so'm*\n"
+        f"💳 To'lov: {d.get('co_payment','card').upper()}\n\n"
+        f"👤 {d['co_name']}\n"
+        f"📱 {d['co_phone']}\n"
+        f"🏠 {d['co_addr']}\n"
+        f"🆔 Buyurtmalar: {ids_str}"
+    )
+    admin_kb_cart = InlineKeyboardMarkup([[
+        InlineKeyboardButton("💬 Mijoz bilan bog'lanish", url=f"tg://user?id={usr.id}")
+    ]])
+    await ctx.bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown", reply_markup=admin_kb_cart)
+    await ctx.bot.send_photo(ADMIN_ID, receipt_id, caption=f"🧾 Savat buyurtmasi cheki\n{ids_str}")
+    ctx.user_data["cart"] = {}
+    return ConversationHandler.END
+
+
+# ═══════════════════════════════════════════════════════════
 #  🔧  YORDAMCHILAR
 # ═══════════════════════════════════════════════════════════
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2024,6 +2375,31 @@ def main():
         allow_reentry=True,
     )
 
+    # ── Admin: mahsulot tahrirlash ─────────────────────────
+    edit_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(ep_select, pattern=r"^editp_\d+$")],
+        states={
+            EP_FIELD: [CallbackQueryHandler(ep_field, pattern=r"^epfield_")],
+            EP_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ep_value)],
+        },
+        fallbacks=[CommandHandler("bekor", cancel)],
+        allow_reentry=True,
+    )
+
+    # ── Savat (korzinka) checkout ──────────────────────────
+    cart_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(cart_checkout_start, pattern="^cart_checkout$")],
+        states={
+            CART_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, cart_co_name)],
+            CART_PHONE:   [MessageHandler(filters.CONTACT | (filters.TEXT & ~filters.COMMAND), cart_co_phone)],
+            CART_ADDR:    [MessageHandler(filters.TEXT & ~filters.COMMAND, cart_co_addr)],
+            CART_PAY:     [CallbackQueryHandler(cart_co_pay, pattern=r"^cpay_")],
+            CART_RECEIPT: [MessageHandler(filters.PHOTO, cart_co_receipt)],
+        },
+        fallbacks=[CommandHandler("bekor", cancel)],
+        allow_reentry=True,
+    )
+
     # ── Handlerlarni ro'yxatga olish ──────────────────────
     app.add_handler(CommandHandler("start",   start))
     app.add_handler(CommandHandler("catalog", catalog))
@@ -2031,9 +2407,12 @@ def main():
     app.add_handler(CommandHandler("admin",   admin_menu))
     app.add_handler(CommandHandler("referral",referral))
     app.add_handler(CommandHandler("balance", balance_cmd))
+    app.add_handler(CommandHandler("savat",   lambda u,c: cart_view_cmd(u,c)))
     app.add_handler(CommandHandler("menu",    lambda u,c: show_main_menu(u,c,get_lang(u.effective_user.id))))
 
     # Conversation handlers (yuqori prioritet)
+    app.add_handler(cart_conv)
+    app.add_handler(edit_conv)
     app.add_handler(add_conv)
     app.add_handler(order_conv)
     app.add_handler(search_conv)
@@ -2052,6 +2431,9 @@ def main():
     app.add_handler(CallbackQueryHandler(back_catalog,      pattern="^back_catalog$"))
     app.add_handler(CallbackQueryHandler(admin_callback,    pattern=r"^adm_"))
     app.add_handler(CallbackQueryHandler(delete_product_cb, pattern=r"^delp_\d+$"))
+    app.add_handler(CallbackQueryHandler(cart_add,          pattern=r"^cart_add_\d+$"))
+    app.add_handler(CallbackQueryHandler(cart_view,         pattern="^cart_view$"))
+    app.add_handler(CallbackQueryHandler(cart_clear,        pattern="^cart_clear$"))
     app.add_handler(CallbackQueryHandler(noop,              pattern="^noop$"))
 
     # ── Rejalashtirilgan ishlar ────────────────────────────
