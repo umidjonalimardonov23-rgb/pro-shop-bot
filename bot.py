@@ -1590,17 +1590,24 @@ async def ap_stock(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ──── KANALGA AVTOMATIK POST ────────────────────────────
     try:
         bot_info = await ctx.bot.get_me()
+        qty_val  = int(txt)
+        stock_emoji = "🟢" if qty_val > 10 else ("🟡" if qty_val > 3 else "🔴")
         caption  = (
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🆕 *{d['ap_name']}*\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 *Narxi: {d['ap_price']:,} so'm*\n\n"
-            f"📝 {d['ap_desc']}\n\n"
-            f"✅ Mavjud: {int(txt)} dona"
+            f"╔══════════════════════╗\n"
+            f"║  🛍️  *YANGI MAHSULOT*  🛍️  ║\n"
+            f"╚══════════════════════╝\n\n"
+            f"✨ *{d['ap_name']}* ✨\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 *Narxi:*  `{d['ap_price']:,} so'm`\n"
+            f"{stock_emoji} *Mavjud:*  {qty_val} dona\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📋 *Tavsif:*\n{d['ap_desc']}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚡️ Tez buyurtma bering — soni cheklangan!"
         )
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton(
-                "🛒 Buyurtma berish",
+                "🛒 Hoziroq buyurtma berish",
                 url=f"https://t.me/{bot_info.username}?start=product_{pid}"
             )
         ]])
