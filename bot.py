@@ -34,7 +34,7 @@ from telegram.ext import (
 # ═══════════════════════════════════════════════════════════
 BOT_TOKEN  = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID   = int(os.environ.get("ADMIN_ID", "8787603995"))
-CHANNEL_ID = os.environ.get("CHANNEL_ID", "@sinov_shop_bot")
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@Shop_market_uzz")
 
 CARD_NUMBER = os.environ.get("CARD_NUMBER", "9860 6067 6080 6673")
 CARD_OWNER  = os.environ.get("CARD_OWNER",  "+998953909477")
