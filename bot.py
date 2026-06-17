@@ -2029,8 +2029,9 @@ async def admin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"  {medals[i]} {p[1]} — {p[2]:,} ta sotilgan"
             for i, p in enumerate(top_p) if p[2] > 0
         ) or "  Hali sotilgan mahsulot yo'q"
+        unknown = "Noma'lum"
         top_c_str = "\n".join(
-            f"  {medals[i]} {c[1] or 'Noma\'lum'} — {c[3]:,} so'm ({c[2]} ta)"
+            f"  {medals[i]} {c[1] or unknown} — {c[3]:,} so'm ({c[2]} ta)"
             for i, c in enumerate(top_c) if c[3] > 0
         ) or "  Hali ma'lumot yo'q"
         msg = (
