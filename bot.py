@@ -133,12 +133,10 @@ TEXTS = {
         "order_pay":     "💳 Выберите способ оплаты:",
         "order_done":    (
             "✅ *Заказ принят!*\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
             "📦 {name}\n"
             "💰 {price} × {qty} = {subtotal} сум\n"
             "🎁 Скидка: -{discount} сум\n"
             "🚚 Доставка: {delivery} сум\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
             "💳 *Итого: {total} сум*\n\n"
             "⏳ Администратор скоро свяжется!"
         ),
@@ -340,6 +338,18 @@ def init_db():
         comment    TEXT,
         created_at TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS wishlists (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id    INTEGER,
+        product_id INTEGER,
+        created_at TEXT,
+        UNIQUE(user_id, product_id)
+    )""")
+    # ── Yangi ustunlar: mavjud DB uchun migration ─────────
+    try:
+        c.execute("ALTER TABLE products ADD COLUMN sale_price INTEGER DEFAULT 0")
+    except Exception:
+        pass
     c.execute("""CREATE TABLE IF NOT EXISTS delivery_zones (
         id      INTEGER PRIMARY KEY AUTOINCREMENT,
         name_uz TEXT, name_ru TEXT, name_en TEXT,
@@ -522,6 +532,60 @@ def get_top_products(limit=10):
             (limit,)
         ).fetchall()
 
+def toggle_wishlist(uid, pid):
+    """❤️ Mahsulotni sevimliga qo'sh/olib tashlash. True=qo'shildi, False=o'chirildi."""
+    with db() as c:
+        existing = c.execute(
+            "SELECT id FROM wishlists WHERE user_id=? AND product_id=?", (uid, pid)
+        ).fetchone()
+        if existing:
+            c.execute("DELETE FROM wishlists WHERE user_id=? AND product_id=?", (uid, pid))
+            return False
+        else:
+            c.execute(
+                "INSERT INTO wishlists(user_id,product_id,created_at) VALUES(?,?,?)",
+                (uid, pid, datetime.now().isoformat())
+            )
+            return True
+
+def in_wishlist(uid, pid):
+    with db() as c:
+        return bool(c.execute(
+            "SELECT 1 FROM wishlists WHERE user_id=? AND product_id=?", (uid, pid)
+        ).fetchone())
+
+def get_wishlist_products(uid):
+    with db() as c:
+        return c.execute("""
+            SELECT p.* FROM products p
+            JOIN wishlists w ON p.id=w.product_id
+            WHERE w.user_id=? AND p.active=1
+            ORDER BY w.created_at DESC
+        """, (uid,)).fetchall()
+
+def get_week_stats():
+    week_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    with db() as c:
+        o = c.execute("SELECT COUNT(*) FROM orders WHERE created_at>=?", (week_start,)).fetchone()[0]
+        r = c.execute(
+            "SELECT COALESCE(SUM(total),0) FROM orders WHERE created_at>=? AND status!='cancelled'",
+            (week_start,)
+        ).fetchone()[0]
+        u = c.execute("SELECT COUNT(*) FROM users WHERE created_at>=?", (week_start,)).fetchone()[0]
+    return o, r, u
+
+def get_top_customers(limit=5):
+    with db() as c:
+        return c.execute("""
+            SELECT user_id, buyer_name, COUNT(*) as cnt, COALESCE(SUM(total),0) as spent
+            FROM orders WHERE status NOT IN ('cancelled','new')
+            GROUP BY user_id ORDER BY spent DESC LIMIT ?
+        """, (limit,)).fetchall()
+
+def set_sale_price(pid, sale_price):
+    with db() as c:
+        c.execute("UPDATE products SET sale_price=? WHERE id=?", (sale_price, pid))
+
 def get_stuck_orders(hours=2):
     threshold = (datetime.now() - timedelta(hours=hours)).isoformat()
     with db() as c:
@@ -628,6 +692,7 @@ EP_SELECT, EP_FIELD, EP_VALUE = range(75, 78)
 
 # Savat (korzinka) checkout
 CART_NAME, CART_PHONE, CART_ADDR = range(80, 83)
+ADM_MSG = 95  # Admin → Mijoz xabar ConversationHandler state
 
 # Chek kutish: {user_id: order_id}  — ConversationHandler tashqarisida ishlatiladi
 PENDING_RECEIPT: dict = {}
@@ -649,6 +714,7 @@ MENU_LABELS = {
         "search":   "🔍 Qidirish",
         "orders":   "📦 Buyurtmalarim",
         "cart":     "🛒 Savat",
+        "wishlist": "❤️ Sevimlilar",
         "balance":  "💰 Balansim",
         "referral": "👥 Referal",
         "lang":     "🌐 Til",
@@ -659,6 +725,7 @@ MENU_LABELS = {
         "search":   "🔍 Поиск",
         "orders":   "📦 Мои заказы",
         "cart":     "🛒 Корзина",
+        "wishlist": "❤️ Избранное",
         "balance":  "💰 Баланс",
         "referral": "👥 Реферал",
         "lang":     "🌐 Язык",
@@ -669,6 +736,7 @@ MENU_LABELS = {
         "search":   "🔍 Search",
         "orders":   "📦 My Orders",
         "cart":     "🛒 Cart",
+        "wishlist": "❤️ Wishlist",
         "balance":  "💰 Balance",
         "referral": "👥 Referral",
         "lang":     "🌐 Language",
@@ -686,13 +754,13 @@ def main_menu_kb(uid, lang):
     """Pastki ReplyKeyboard — to'rtburchak tugmalar."""
     L = MENU_LABELS.get(lang, MENU_LABELS["uz"])
     rows = [
-        [L["catalog"],  L["search"]  ],
-        [L["orders"],   L["cart"]    ],
-        [L["balance"],  L["referral"]],
-        [L["lang"]],
+        [L["catalog"],  L["search"]   ],
+        [L["orders"],   L["cart"]     ],
+        [L["wishlist"], L["balance"]  ],
+        [L["referral"], L["lang"]     ],
     ]
     if uid == ADMIN_ID:
-        rows[-1].append(L["admin"])
+        rows.append([L["admin"]])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
 async def show_main_menu(update, ctx, lang, via_query=False):
@@ -726,6 +794,8 @@ async def menu_text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await balance_cmd(update, ctx)
     elif act == "referral":
         await referral(update, ctx)
+    elif act == "wishlist":
+        await show_wishlist(update, ctx)
     elif act == "lang":
         await update.message.reply_text(t(lang, "choose_lang"), reply_markup=lang_kb())
     elif act == "admin":
@@ -872,11 +942,21 @@ async def show_product(update, ctx, pid, lang, via_query=False):
         for r in reviews[:3]:
             rev_str += f"{'⭐'*r[0]}" + (f" — _{r[1]}_" if r[1] else "") + "\n"
 
+    # Sale narx (yangi ustun: index 15)
+    sale_price = p[15] if len(p) > 15 else 0
+    if sale_price and sale_price > 0:
+        price_str = f"💸 Asl narxi: {p[6]:,} so'm\n🔥 *Aksiya: {sale_price:,} so'm*"
+    else:
+        price_str = f"💰 *Narxi: {p[6]:,} so'm*"
+
+    # Wishlist holati
+    uid_for_wish = update.callback_query.from_user.id if via_query else update.message.from_user.id
+    is_fav      = in_wishlist(uid_for_wish, pid)
+    wish_label  = "❤️ Saqlangan" if is_fav else "🤍 Sevimliga"
+
     caption = (
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 *{p[name_col]}*\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 *Narxi: {p[6]:,} so'm*\n"
+        f"📦 *{p[name_col]}*\n\n"
+        f"{price_str}\n"
         f"{stock_str}"
         f"{stars_str}\n"
         f"{views_str}\n\n"
@@ -884,20 +964,22 @@ async def show_product(update, ctx, pid, lang, via_query=False):
         f"{rev_str}"
     )
 
-    cart = ctx.user_data.get("cart", {})
+    cart       = ctx.user_data.get("cart", {})
     cart_count = sum(v["qty"] for v in cart.values())
     cart_label = f"🛒 Savat ({cart_count} ta)" if cart_count > 0 else "🛒 Savat"
 
     if stock > 0:
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"⚡ Hoziroq buyurtma", callback_data=f"order_{pid}"),
-             InlineKeyboardButton("➕ Savatga qo'sh",     callback_data=f"cart_add_{pid}")],
-            [InlineKeyboardButton(cart_label,              callback_data="cart_view")],
+            [InlineKeyboardButton("⚡ Hoziroq buyurtma", callback_data=f"order_{pid}"),
+             InlineKeyboardButton("➕ Savatga qo'sh",    callback_data=f"cart_add_{pid}")],
+            [InlineKeyboardButton(wish_label,             callback_data=f"wish_{pid}"),
+             InlineKeyboardButton(cart_label,             callback_data="cart_view")],
         ])
     else:
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("❌ Tugagan", callback_data="noop")
-        ]])
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Tugagan",  callback_data="noop"),
+             InlineKeyboardButton(wish_label,    callback_data=f"wish_{pid}")],
+        ])
 
     chat_id = update.callback_query.message.chat_id if via_query else update.message.chat_id
     await ctx.bot.send_photo(
@@ -1493,7 +1575,8 @@ async def receipt_photo_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     admin_check_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Chek qabul — Tasdiqlash!", callback_data=f"ochekok_{oid}")],
         [InlineKeyboardButton("❌ Chek rad etish",           callback_data=f"ochekrad_{oid}")],
-        [InlineKeyboardButton("💬 Mijoz bilan bog'lanish",   url=f"tg://user?id={uid}")],
+        [InlineKeyboardButton("💬 Bot orqali xabar",        callback_data=f"admsg_{ADMIN_ID}_{uid}"),
+         InlineKeyboardButton("📱 Telegram",                url=f"tg://user?id={uid}")],
     ])
     admin_caption = (
         f"🧾 *#{oid} BUYURTMA CHEKI KELDI!*\n\n"
@@ -1666,19 +1749,201 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid    = update.effective_user.id
     lang   = get_lang(uid)
     orders = get_orders(uid)
-    kb     = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Bosh menyu", callback_data="menu_home")]])
     if not orders:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Bosh menyu", callback_data="menu_home")]])
         await _reply(update, t(lang, "no_orders"), kb)
         return
     S = {
-        "new": t(lang,"status_new"), "confirmed": t(lang,"status_confirmed"),
-        "delivered": t(lang,"status_delivered"), "cancelled": t(lang,"status_cancelled"),
+        "new":       t(lang, "status_new"),
+        "confirmed": t(lang, "status_confirmed"),
+        "delivered": t(lang, "status_delivered"),
+        "cancelled": t(lang, "status_cancelled"),
+        "paid":      "💳 To'langan",
     }
-    lines = [
-        f"🔹 *#{o[0]}* | {o[5]} | {o[8]:,} so'm | {S.get(o[13],'?')}"
-        for o in orders
-    ]
-    await _reply(update, t(lang, "my_orders") + "\n\n" + "\n".join(lines), kb)
+    await _reply(update, t(lang, "my_orders"), None)
+    # Har bir buyurtma uchun alohida xabar + Qayta buyurtma tugmasi
+    chat = update.effective_chat
+    for o in orders[:10]:
+        status_icon = S.get(o[13], "❓")
+        text = (
+            f"📦 *{o[5]}*\n"
+            f"💰 {o[8]:,} so'm  •  {status_icon}\n"
+            f"📅 {(o[19] or '')[:10]}\n"
+            f"🆔 #{o[0]}"
+        )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔁 Qayta buyurtma", callback_data=f"reorder_{o[0]}")
+        ]])
+        await ctx.bot.send_message(chat.id, text, parse_mode="Markdown", reply_markup=kb)
+
+# ═══════════════════════════════════════════════════════════
+#  ❤️  WISHLIST (SEVIMLILAR)
+# ═══════════════════════════════════════════════════════════
+async def wish_toggle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """❤️ / 🤍 — mahsulotni sevimliga qo'sh/o'chir."""
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    pid = int(query.data.split("_")[1])
+    added = toggle_wishlist(uid, pid)
+    await query.answer(
+        "❤️ Sevimliga qo'shildi!" if added else "💔 Sevimlilardan o'chirildi",
+        show_alert=True
+    )
+    # Mahsulot kartasini yangilaymiz
+    await show_product(update, ctx, pid, via_query=True)
+
+async def show_wishlist(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """❤️ Sevimlilar ro'yxatini ko'rsatish."""
+    uid      = update.effective_user.id
+    lang     = get_lang(uid)
+    products = get_wishlist_products(uid)
+    msg_obj  = update.callback_query.message if update.callback_query else update.message
+
+    if not products:
+        await msg_obj.reply_text(
+            "💔 Hali sevimlilar yo'q.\n\nMahsulotni ko'rib 🤍 tugmasini bosing!"
+        )
+        return
+    await msg_obj.reply_text(f"❤️ *Sevimlilar ({len(products)} ta):*", parse_mode="Markdown")
+    name_col = {"uz": 3, "ru": 4, "en": 5}[lang]
+    for p in products:
+        sale_price = p[15] if len(p) > 15 else 0
+        if sale_price and sale_price > 0:
+            price_str = f"💸 {p[6]:,} → 🔥 *{sale_price:,} so'm*"
+        else:
+            price_str = f"💰 {p[6]:,} so'm"
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⚡ Buyurtma",   callback_data=f"order_{p[0]}"),
+            InlineKeyboardButton("💔 O'chirish",  callback_data=f"wish_{p[0]}"),
+        ]])
+        await msg_obj.reply_text(
+            f"📦 *{p[name_col]}*\n{price_str}",
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
+
+# ═══════════════════════════════════════════════════════════
+#  🔁  QAYTA BUYURTMA
+# ═══════════════════════════════════════════════════════════
+async def reorder_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Foydalanuvchi eski buyurtmasini qaytadan beradi."""
+    query = update.callback_query
+    await query.answer()
+    oid = int(query.data.split("_")[1])
+    with db() as c:
+        order = c.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not order:
+        await query.answer("❌ Buyurtma topilmadi", show_alert=True)
+        return
+    pid = order[4]
+    await query.message.reply_text(
+        f"🔁 *Qayta buyurtma*\n\n"
+        f"📦 {order[5]}\n"
+        f"💰 {order[7]:,} so'm\n\n"
+        f"Davom etish uchun tugmani bosing:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⚡ Ha, buyurtma beraman", callback_data=f"order_{pid}")
+        ]])
+    )
+
+# ═══════════════════════════════════════════════════════════
+#  💬  ADMIN → MIJOZ XABAR (ConversationHandler)
+# ═══════════════════════════════════════════════════════════
+FLASH_SELECT = 96  # Flash sale product tanlash state
+
+async def admsg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin buyurtma kartasidan mijozga to'g'ridan xabar yozadi."""
+    query = update.callback_query
+    await query.answer()
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+    uid = int(query.data.split("_")[2])
+    ctx.user_data["adm_msg_target"] = uid
+    await query.message.reply_text(
+        f"💬 *{uid}* ID li foydalanuvchiga xabar yozing:\n_(Bekor qilish: /cancel)_",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([["/cancel"]], resize_keyboard=True)
+    )
+    return ADM_MSG
+
+async def admsg_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Adminning xabarini mijozga yuboradi."""
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+    target = ctx.user_data.get("adm_msg_target")
+    if not target:
+        return ConversationHandler.END
+    text = update.message.text
+    try:
+        await ctx.bot.send_message(
+            chat_id=target,
+            text=f"📩 *Do'kondan xabar:*\n\n{text}",
+            parse_mode="Markdown"
+        )
+        await update.message.reply_text("✅ Xabar yuborildi!", reply_markup=ReplyKeyboardRemove())
+    except Exception as e:
+        await update.message.reply_text(f"❌ Xatolik: {e}", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+async def admsg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Bekor qilindi.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+# ═══════════════════════════════════════════════════════════
+#  🏷  FLASH SALE — narx belgilash
+# ═══════════════════════════════════════════════════════════
+FLASH_PRICE = 97  # Flash sale narx kiritish state
+
+async def flashset_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin mahsulotni tanladi — aksiya narxini so'raydi."""
+    query = update.callback_query
+    await query.answer()
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+    pid = int(query.data.split("_")[1])
+    with db() as c:
+        p = c.execute("SELECT name_uz, price, sale_price FROM products WHERE id=?", (pid,)).fetchone()
+    if not p:
+        return ConversationHandler.END
+    ctx.user_data["flash_pid"] = pid
+    cur_sale = p[2] if p[2] else 0
+    await query.message.reply_text(
+        f"🏷 *{p[0]}*\n"
+        f"💰 Asl narx: {p[1]:,} so'm\n"
+        f"🔥 Hozirgi aksiya: {cur_sale:,} so'm\n\n"
+        f"Yangi aksiya narxini kiriting (so'mda)\n"
+        f"_(0 kiriting — aksiyani bekor qilish):_",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([["/cancel"]], resize_keyboard=True)
+    )
+    return FLASH_PRICE
+
+async def flashset_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Aksiya narxini saqlaydi va kanalga yangilangan post yuboradi."""
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+    pid = ctx.user_data.get("flash_pid")
+    try:
+        sale = int(update.message.text.strip().replace(" ", "").replace(",", ""))
+    except ValueError:
+        await update.message.reply_text("❌ Raqam kiriting.")
+        return FLASH_PRICE
+    set_sale_price(pid, sale)
+    if sale > 0:
+        await update.message.reply_text(
+            f"✅ Aksiya narxi belgilandi: *{sale:,} so'm* 🔥",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await update.message.reply_text("✅ Aksiya bekor qilindi.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+async def flashset_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Bekor qilindi.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
 
 # ═══════════════════════════════════════════════════════════
 #  🛠  ADMIN PANEL
@@ -1689,17 +1954,18 @@ def admin_kb():
          InlineKeyboardButton("✏️ Mahsulot tahrirlash", callback_data="adm_editprod")],
         [InlineKeyboardButton("🗑 Mahsulot o'chirish", callback_data="adm_delprod"),
          InlineKeyboardButton("🔢 Zahira yangilash",   callback_data="adm_stock")],
-        [InlineKeyboardButton("⚠️ Kam qolganlar",      callback_data="adm_lowstock"),
-         InlineKeyboardButton("🏆 Top sotilganlar",    callback_data="adm_topsales")],
-        [InlineKeyboardButton("📊 Statistika",         callback_data="adm_stats"),
-         InlineKeyboardButton("📋 Buyurtmalar",        callback_data="adm_orders")],
-        [InlineKeyboardButton("📢 Broadcast",          callback_data="adm_broadcast"),
-         InlineKeyboardButton("📥 CSV Export",         callback_data="adm_export")],
-        [InlineKeyboardButton("🎁 Promo qo'shish",     callback_data="adm_addpromo"),
-         InlineKeyboardButton("🎫 Promo ro'yxat",      callback_data="adm_promos")],
-        [InlineKeyboardButton("📦 Hudud qo'shish",     callback_data="adm_addzone"),
-         InlineKeyboardButton("⭐ Sharhlar",           callback_data="adm_reviews")],
-        [InlineKeyboardButton("🏠 Bosh menyu",         callback_data="menu_home")],
+        [InlineKeyboardButton("🏷 Flash Sale",         callback_data="adm_flashsale"),
+         InlineKeyboardButton("⚠️ Kam qolganlar",      callback_data="adm_lowstock")],
+        [InlineKeyboardButton("🏆 Top sotilganlar",    callback_data="adm_topsales"),
+         InlineKeyboardButton("📊 PRO Statistika",     callback_data="adm_stats")],
+        [InlineKeyboardButton("📋 Buyurtmalar",        callback_data="adm_orders"),
+         InlineKeyboardButton("📢 Broadcast",          callback_data="adm_broadcast")],
+        [InlineKeyboardButton("📥 CSV Export",         callback_data="adm_export"),
+         InlineKeyboardButton("🎁 Promo qo'shish",     callback_data="adm_addpromo")],
+        [InlineKeyboardButton("🎫 Promo ro'yxat",      callback_data="adm_promos"),
+         InlineKeyboardButton("📦 Hudud qo'shish",     callback_data="adm_addzone")],
+        [InlineKeyboardButton("⭐ Sharhlar",           callback_data="adm_reviews"),
+         InlineKeyboardButton("🏠 Bosh menyu",         callback_data="menu_home")],
     ])
 
 async def admin_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1754,17 +2020,40 @@ async def admin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if action == "adm_stats":
         tot_o, tot_r, new_o, tot_u, tot_p, avg_r = get_stats()
-        await query.message.reply_text(
-            f"📊 *Statistika*\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"👥 Foydalanuvchilar: *{tot_u}*\n"
-            f"📦 Faol mahsulotlar: *{tot_p}*\n"
-            f"🛒 Jami buyurtmalar: *{tot_o}*\n"
-            f"🆕 Yangi (ko'rilmagan): *{new_o}*\n"
-            f"💰 Jami daromad: *{tot_r:,} so'm*\n"
-            f"⭐ O'rtacha reyting: *{avg_r:.1f}/5*",
-            parse_mode="Markdown"
+        tod_o, tod_r, tod_u = get_today_stats()
+        wk_o,  wk_r,  wk_u  = get_week_stats()
+        top_p = get_top_products(5)
+        top_c = get_top_customers(3)
+        medals = ["🥇","🥈","🥉","🏅","🏅"]
+        top_p_str = "\n".join(
+            f"  {medals[i]} {p[1]} — {p[2]:,} ta sotilgan"
+            for i, p in enumerate(top_p) if p[2] > 0
+        ) or "  Hali sotilgan mahsulot yo'q"
+        top_c_str = "\n".join(
+            f"  {medals[i]} {c[1] or 'Noma\'lum'} — {c[3]:,} so'm ({c[2]} ta)"
+            for i, c in enumerate(top_c) if c[3] > 0
+        ) or "  Hali ma'lumot yo'q"
+        msg = (
+            "📊 *PRO Statistika*\n\n"
+            f"📅 *Bugun:*\n"
+            f"  🛒 Buyurtmalar: *{tod_o}* ta\n"
+            f"  💵 Daromad: *{tod_r:,}* so'm\n"
+            f"  👤 Yangi foydalanuvchi: *{tod_u}* ta\n\n"
+            f"📆 *Oxirgi 7 kun:*\n"
+            f"  🛒 Buyurtmalar: *{wk_o}* ta\n"
+            f"  💵 Daromad: *{wk_r:,}* so'm\n"
+            f"  👤 Yangi: *{wk_u}* ta\n\n"
+            f"📈 *Umumiy:*\n"
+            f"  👥 Foydalanuvchilar: *{tot_u}*\n"
+            f"  📦 Faol mahsulotlar: *{tot_p}*\n"
+            f"  🛒 Jami buyurtmalar: *{tot_o}*\n"
+            f"  🆕 Ko'rilmagan: *{new_o}*\n"
+            f"  💰 Jami daromad: *{tot_r:,}* so'm\n"
+            f"  ⭐ O'rtacha reyting: *{avg_r:.1f}/5*\n\n"
+            f"🏆 *Top mahsulotlar:*\n{top_p_str}\n\n"
+            f"👑 *Top mijozlar:*\n{top_c_str}"
         )
+        await query.message.reply_text(msg, parse_mode="Markdown")
 
     elif action == "adm_orders":
         orders = get_orders()
@@ -1818,6 +2107,21 @@ async def admin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "⚠️ *Kam qolgan mahsulotlar:*\n\n" + "\n".join(lines),
             parse_mode="Markdown"
+        )
+
+    elif action == "adm_flashsale":
+        products = get_products()
+        if not products:
+            await query.message.reply_text("😔 Mahsulotlar yo'q.")
+            return
+        buttons = [[InlineKeyboardButton(
+            f"🏷 {p[3]} — {p[6]:,} so'm", callback_data=f"flashset_{p[0]}"
+        )] for p in products]
+        buttons.append([InlineKeyboardButton("❌ Bekor", callback_data="adm_back")])
+        await query.message.reply_text(
+            "🏷 *Flash Sale* — mahsulot tanlang (aksiya narxi belgilash):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
 
     elif action == "adm_topsales":
@@ -2732,6 +3036,24 @@ def main():
     app.add_handler(stock_conv)
     app.add_handler(note_conv)
 
+    # ── Admin → Mijoz xabar ConversationHandler ───────────
+    admsg_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admsg_start, pattern=r"^admsg_\d+_\d+$")],
+        states={ADM_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, admsg_send)]},
+        fallbacks=[CommandHandler("cancel", admsg_cancel)],
+        per_chat=False, per_user=True,
+    )
+    app.add_handler(admsg_conv)
+
+    # ── Flash Sale ConversationHandler ────────────────────
+    flashset_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(flashset_start, pattern=r"^flashset_\d+$")],
+        states={FLASH_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, flashset_price)]},
+        fallbacks=[CommandHandler("cancel", flashset_cancel)],
+        per_chat=False, per_user=True,
+    )
+    app.add_handler(flashset_conv)
+
     # Callback handlers
     app.add_handler(CallbackQueryHandler(set_language,      pattern=r"^lang_"))
     app.add_handler(CallbackQueryHandler(menu_callback,     pattern=r"^menu_"))
@@ -2743,6 +3065,9 @@ def main():
     app.add_handler(CallbackQueryHandler(cart_add,          pattern=r"^cart_add_\d+$"))
     app.add_handler(CallbackQueryHandler(cart_view,         pattern="^cart_view$"))
     app.add_handler(CallbackQueryHandler(cart_clear,        pattern="^cart_clear$"))
+    # ── ❤️ Wishlist + 🔁 Qayta buyurtma ──────────────────
+    app.add_handler(CallbackQueryHandler(wish_toggle,       pattern=r"^wish_\d+$"))
+    app.add_handler(CallbackQueryHandler(reorder_handler,   pattern=r"^reorder_\d+$"))
     # ── To'lov oqimi ──────────────────────────────────────
     app.add_handler(CallbackQueryHandler(order_approve,     pattern=r"^oapprove_\d+$"))
     app.add_handler(CallbackQueryHandler(order_reject,      pattern=r"^oreject_\d+$"))
