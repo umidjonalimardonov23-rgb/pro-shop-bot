@@ -56,8 +56,8 @@ logging.basicConfig(
 # ═══════════════════════════════════════════════════════════
 TEXTS = {
     "uz": {
-        "welcome":       "👋 Salom, *{name}*!\n\n🌐 Tilni tanlang:",
-        "welcome_back":  "🏠 Xush kelibsiz, *{name}*! 🎉\n\n👇 Quyidagi menyudan tanlang:",
+        "welcome":       "👋 Salom, *{name}*! Xush kelibsiz 🎉\n\n🌐 Tilni tanlang:",
+        "welcome_back":  "👋 Xush kelibsiz, *{name}*! 🎉\n\n👇 Pastdagi menyudan tanlang:",
         "choose_lang":   "🌐 Tilni tanlang:",
         "catalog":       "🗂 Kategoriyani tanlang:",
         "no_products":   "😔 Bu kategoriyada mahsulot yo'q.",
@@ -72,12 +72,10 @@ TEXTS = {
         "order_pay":     "💳 To'lov usulini tanlang:",
         "order_done":    (
             "✅ *Buyurtma qabul qilindi!*\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
             "📦 {name}\n"
             "💰 {price} × {qty} = {subtotal} so'm\n"
             "🎁 Chegirma: -{discount} so'm\n"
-            "🚚 Yetkazib berish: {delivery} so'm\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🚚 Yetkazish: {delivery} so'm\n"
             "💳 *Jami: {total} so'm*\n\n"
             "⏳ Admin tez orada bog'lanadi!"
         ),
@@ -644,54 +642,97 @@ def lang_kb():
         InlineKeyboardButton("🇬🇧 English",  callback_data="lang_en"),
     ]])
 
+# ── Menyu tugma matnlari (barcha tillar) ─────────────────
+MENU_LABELS = {
+    "uz": {
+        "catalog":  "🛍 Katalog",
+        "search":   "🔍 Qidirish",
+        "orders":   "📦 Buyurtmalarim",
+        "cart":     "🛒 Savat",
+        "balance":  "💰 Balansim",
+        "referral": "👥 Referal",
+        "lang":     "🌐 Til",
+        "admin":    "🛠 Admin Panel",
+    },
+    "ru": {
+        "catalog":  "🛍 Каталог",
+        "search":   "🔍 Поиск",
+        "orders":   "📦 Мои заказы",
+        "cart":     "🛒 Корзина",
+        "balance":  "💰 Баланс",
+        "referral": "👥 Реферал",
+        "lang":     "🌐 Язык",
+        "admin":    "🛠 Admin Panel",
+    },
+    "en": {
+        "catalog":  "🛍 Catalog",
+        "search":   "🔍 Search",
+        "orders":   "📦 My Orders",
+        "cart":     "🛒 Cart",
+        "balance":  "💰 Balance",
+        "referral": "👥 Referral",
+        "lang":     "🌐 Language",
+        "admin":    "🛠 Admin Panel",
+    },
+}
+
+# Barcha tillar uchun matn → action mapping (text handler uchun)
+ALL_MENU_TEXTS: dict = {}
+for _lng, _lbls in MENU_LABELS.items():
+    for _act, _lbl in _lbls.items():
+        ALL_MENU_TEXTS[_lbl] = _act
+
 def main_menu_kb(uid, lang):
-    items = {
-        "uz": [
-            ("🛍 Katalog",          "menu_catalog"),
-            ("🔍 Qidirish",         "menu_search"),
-            ("📦 Buyurtmalarim",    "menu_orders"),
-            ("💰 Balansim",         "menu_balance"),
-            ("👥 Referal",          "menu_referral"),
-            ("🌐 Til o'zgartirish", "menu_lang"),
-        ],
-        "ru": [
-            ("🛍 Каталог",          "menu_catalog"),
-            ("🔍 Поиск",            "menu_search"),
-            ("📦 Мои заказы",       "menu_orders"),
-            ("💰 Мой баланс",       "menu_balance"),
-            ("👥 Реферал",          "menu_referral"),
-            ("🌐 Сменить язык",     "menu_lang"),
-        ],
-        "en": [
-            ("🛍 Catalog",          "menu_catalog"),
-            ("🔍 Search",           "menu_search"),
-            ("📦 My Orders",        "menu_orders"),
-            ("💰 My Balance",       "menu_balance"),
-            ("👥 Referral",         "menu_referral"),
-            ("🌐 Change Language",  "menu_lang"),
-        ],
-    }[lang]
-    rows = []
-    for i in range(0, len(items), 2):
-        row = [InlineKeyboardButton(items[i][0], callback_data=items[i][1])]
-        if i + 1 < len(items):
-            row.append(InlineKeyboardButton(items[i+1][0], callback_data=items[i+1][1]))
-        rows.append(row)
+    """Pastki ReplyKeyboard — to'rtburchak tugmalar."""
+    L = MENU_LABELS.get(lang, MENU_LABELS["uz"])
+    rows = [
+        [L["catalog"],  L["search"]  ],
+        [L["orders"],   L["cart"]    ],
+        [L["balance"],  L["referral"]],
+        [L["lang"]],
+    ]
     if uid == ADMIN_ID:
-        rows.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="menu_admin")])
-    return InlineKeyboardMarkup(rows)
+        rows[-1].append(L["admin"])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
 async def show_main_menu(update, ctx, lang, via_query=False):
     user = update.effective_user
-    text = t(lang, "welcome_back", name=user.first_name)
     kb   = main_menu_kb(user.id, lang)
+    text = t(lang, "welcome_back", name=user.first_name)
     if via_query and update.callback_query:
+        # Inline xabarni o'chirmaymiz, shunchaki yangi xabar
         try:
-            await update.callback_query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
-        except Exception:
             await update.callback_query.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+        except Exception:
+            pass
     else:
         await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+async def menu_text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Pastki klaviatura tugmalarini ushlaydi."""
+    txt  = update.message.text.strip()
+    act  = ALL_MENU_TEXTS.get(txt)
+    uid  = update.effective_user.id
+    lang = get_lang(uid)
+    if act == "catalog":
+        await catalog(update, ctx)
+    elif act == "search":
+        await search_start(update, ctx)
+    elif act == "orders":
+        await my_orders(update, ctx)
+    elif act == "cart":
+        await cart_view_cmd(update, ctx)
+    elif act == "balance":
+        await balance_cmd(update, ctx)
+    elif act == "referral":
+        await referral(update, ctx)
+    elif act == "lang":
+        await update.message.reply_text(t(lang, "choose_lang"), reply_markup=lang_kb())
+    elif act == "admin":
+        if uid == ADMIN_ID:
+            await admin_menu(update, ctx)
+        else:
+            await update.message.reply_text("❌ Ruxsat yo'q.")
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user     = update.effective_user
@@ -1666,11 +1707,7 @@ async def admin_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if update.message:
             await update.message.reply_text("❌ Ruxsat yo'q.")
         return
-    text = (
-        "🛠 *Admin Panel*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Barcha boshqaruvlar:"
-    )
+    text = "🛠 *Admin Panel* — barcha boshqaruvlar:"
     kb = admin_kb()
     if update.message:
         await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -1949,23 +1986,24 @@ async def ap_stock(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         bot_info = await ctx.bot.get_me()
         qty_val  = int(txt)
-        stock_emoji = "🟢" if qty_val > 10 else ("🟡" if qty_val > 3 else "🔴")
-        caption  = (
-            f"╔══════════════════════╗\n"
-            f"║  🛍️  *YANGI MAHSULOT*  🛍️  ║\n"
-            f"╚══════════════════════╝\n\n"
-            f"✨ *{d['ap_name']}* ✨\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 *Narxi:*  `{d['ap_price']:,} so'm`\n"
-            f"{stock_emoji} *Mavjud:*  {qty_val} dona\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📋 *Tavsif:*\n{d['ap_desc']}\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚡️ Tez buyurtma bering — soni cheklangan!"
+        if qty_val > 10:
+            stock_line = f"🟢 Mavjud: *{qty_val} dona*"
+        elif qty_val > 3:
+            stock_line = f"🟡 Mavjud: *{qty_val} dona* — oz qoldi!"
+        else:
+            stock_line = f"🔴 Mavjud: *{qty_val} dona* — tez tugaydi!"
+
+        caption = (
+            f"🆕 *YANGI MAHSULOT*\n\n"
+            f"🌟 *{d['ap_name']}*\n\n"
+            f"💰 Narxi: *{d['ap_price']:,} so'm*\n"
+            f"{stock_line}\n\n"
+            f"📝 {d['ap_desc']}\n\n"
+            f"🔥 Tez buyurtma bering!"
         )
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton(
-                "🛒 Hoziroq buyurtma berish",
+                "🛒 Buyurtma berish",
                 url=f"https://t.me/{bot_info.username}?start=product_{pid}"
             )
         ]])
@@ -1973,20 +2011,17 @@ async def ap_stock(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             chat_id=CHANNEL_ID, photo=d["ap_photo"],
             caption=caption, parse_mode="Markdown", reply_markup=kb
         )
-        channel_status = f"✅ Kanalga yuborildi: {CHANNEL_ID}"
+        channel_status = f"✅ Kanalga yuborildi"
     except Exception as e:
-        channel_status = f"⚠️ Kanalga yuborishda xato: {e}"
+        channel_status = f"⚠️ Kanal xatosi: {e}"
 
+    lang = get_lang(update.effective_user.id)
     await update.message.reply_text(
-        f"🎉 *Mahsulot muvaffaqiyatli qo'shildi!*\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 Nomi: *{d['ap_name']}*\n"
-        f"💰 Narxi: *{d['ap_price']:,} so'm*\n"
-        f"📦 Miqdor: *{txt} dona*\n"
-        f"🆔 ID: *#{pid}*\n\n"
+        f"✅ *{d['ap_name']}* qo'shildi!\n\n"
+        f"💰 {d['ap_price']:,} so'm  📦 {txt} dona  🆔 #{pid}\n\n"
         f"{channel_status}",
         parse_mode="Markdown",
-        reply_markup=ReplyKeyboardRemove()
+        reply_markup=main_menu_kb(update.effective_user.id, lang)
     )
     return ConversationHandler.END
 
@@ -2677,6 +2712,12 @@ def main():
     app.add_handler(CommandHandler("balance", balance_cmd))
     app.add_handler(CommandHandler("savat",   lambda u,c: cart_view_cmd(u,c)))
     app.add_handler(CommandHandler("menu",    lambda u,c: show_main_menu(u,c,get_lang(u.effective_user.id))))
+
+    # ── Pastki klaviatura text handler (eng yuqori, lekin ConvHandler dan keyin)
+    menu_filter = filters.TEXT & ~filters.COMMAND & filters.Regex(
+        "^(" + "|".join(k.replace("🛍","🛍").replace("(","\\(").replace(")","\\)") for k in ALL_MENU_TEXTS.keys()) + ")$"
+    )
+    app.add_handler(MessageHandler(menu_filter, menu_text_handler), group=0)
 
     # Conversation handlers (yuqori prioritet)
     app.add_handler(cart_conv)
